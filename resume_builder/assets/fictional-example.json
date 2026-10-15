@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "name": "Fictional demonstration — NOT FOR SUBMISSION",
+  "is_example": true,
+  "verified": false,
+  "identity": {
+    "name": "Alex Example",
+    "email": "alex@example.invalid",
+    "phone": "+00 000 000 000",
+    "location": "Example City",
+    "links": ["https://example.invalid/alex"]
+  },
+  "profile": "Fictional operations analyst with experience improving reporting and documenting processes.",
+  "skills": ["Process improvement", "Data analysis", "Stakeholder communication"],
+  "roles": [
+    {
+      "id": "role-example-1",
+      "employer": "Fictional Example Works",
+      "title": "Operations Analyst",
+      "dates": "2022–2025",
+      "background": "Supported a fictional service operations team.",
+      "achievements": [
+        {
+          "id": "evidence-example-1",
+          "text": "Documented a repeatable reporting process for the service team.",
+          "supporting_details": "Interviewed colleagues, mapped source data and wrote an agreed reporting checklist.",
+          "critical": true
+        },
+        {
+          "id": "evidence-example-2",
+          "text": "Prepared weekly service dashboards and explained findings to stakeholders.",
+          "supporting_details": "Reconciled source spreadsheets and presented trends in team meetings.",
+          "critical": false
+        }
+      ]
+    }
+  ],
+  "education": [
+    {
+      "qualification": "Fictional Diploma in Business Analysis",
+      "institution": "Example Learning Institute",
+      "dates": "2021",
+      "details": "Demonstration qualification only."
+    }
+  ],
+  "certifications": ["Fictional reporting fundamentals certificate"],
+  "references": "Fictional demonstration — references are not available.",
+  "additional_sections": [
+    {"heading": "Community activities", "entries": ["Fictional community data workshop volunteer"]}
+  ]
+}

@@ -1,0 +1,21 @@
+Resume Builder V3 Windows is licensed under Apache License 2.0 (see LICENSE).
+Third-party dependencies retain their own licenses.
+
+Principal runtime components:
+Python: Python Software Foundation License.
+PySide6 / Shiboken6 / Qt: LGPLv3 / GPLv3 / commercial options, as applicable.
+This distribution uses the open-source option. Qt is dynamically bundled as
+supporting files; do not remove applicable license notices. Qt source and license
+information: https://www.qt.io/licensing/open-source-lgpl-obligations
+https://code.qt.io/ and https://download.qt.io/official_releases/QtForPython/
+Pydantic / pydantic-core: MIT.
+HTTPX / HTTPcore: BSD-3-Clause.
+python-docx: MIT.
+lxml: BSD-style; libxml2 and libxslt retain their bundled notices.
+keyring: MIT.
+PyInstaller: GPL-2.0-or-later with bootloader exception permitting distribution.
+
+The Windows build includes dependency-licenses/ containing notices from the
+installed distributions and the full GPLv3/LGPLv3 texts applicable to Qt.
+Consult those files for complete applicable terms. No private career data
+or third-party resume templates are included.

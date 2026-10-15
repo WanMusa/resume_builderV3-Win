@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resume-builder-v3-win"
+version = "0.1.0"
+description = "Local native resume builder with explicit, serial generation"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+  "PySide6==6.10.0",
+  "pydantic==2.12.3",
+  "httpx==0.28.1",
+  "python-docx==1.2.0",
+  "keyring==25.6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2", "pyinstaller==6.16.0"]
+
+[project.gui-scripts]
+ResumeBuilderV3 = "resume_builder.app:main"
+
+[tool.setuptools.packages.find]
+include = ["resume_builder*"]
+
+[tool.setuptools.package-data]
+resume_builder = ["assets/*.json", "assets/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

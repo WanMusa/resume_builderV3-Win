@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "exported_at": "2026-10-15T10:00:00+00:00",
+  "jobs": [
+    {
+      "id": "fictional-demo-job-1",
+      "source_url": "https://example.invalid/jobs/operations-analyst",
+      "site": "fictional-demo",
+      "captured_at": "2026-10-15T09:00:00+00:00",
+      "title": "Operations Analyst — NOT FOR SUBMISSION",
+      "company": "Fictional Sample Company",
+      "location": "Example City",
+      "employment_type": "Full-time",
+      "salary_text": null,
+      "description_text": "FICTIONAL DEMONSTRATION — NOT FOR SUBMISSION.\nWe seek an operations analyst to improve reporting processes, reconcile source data, document repeatable workflows and communicate findings to stakeholders.\nRequired: experience with spreadsheets, service reporting and process documentation. Explain complex findings clearly and maintain accurate records.\nThis is a fictional advert for offline app testing only."
+    }
+  ]
+}
