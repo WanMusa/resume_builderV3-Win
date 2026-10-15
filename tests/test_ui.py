@@ -160,12 +160,13 @@ def test_archive_restore_and_local_url_handling(window, monkeypatch):
     path.write_bytes(b"fixture")
     window._open_local(path)
     assert urls[-1].isLocalFile()
-    assert urls[-1].toLocalFile() == str(path)
+    assert Path(urls[-1].toLocalFile()) == path
     window.open_website()
     assert urls[-1] == QUrl("https://example.test/jobs/1")
 
 
 def test_settings_key_excluded_and_connection_runs_off_main_thread(window, app, monkeypatch):
+    window.persist_key.setChecked(False)
     window.key.setText("unit-test-fixture")
     assert window.save_preferences()
     assert window.vault.value == "unit-test-fixture"
