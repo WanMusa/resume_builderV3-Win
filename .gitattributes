@@ -1,0 +1,2 @@
+# Preserve verbatim vendored license bytes and their cross-platform checksums.
+packaging/licenses/*.txt -text
