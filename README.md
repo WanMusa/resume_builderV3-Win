@@ -18,6 +18,8 @@ on discovery.
 2. Select a **successful run for the PR/commit you want to test**. If needed,
    use **Run workflow** on the implementation branch after it is available.
    Builds run on pushes and pull requests without provider keys.
+   If GitHub shows **action_required**, approve the workflow run as repository
+   owner before expecting a Windows artifact; an unstarted run has no build logs.
 3. Under **Artifacts**, download **ResumeBuilderV3-Windows**. GitHub may require
    you to sign in. Extract the artifact ZIP, then extract its contained
    `ResumeBuilderV3-Windows.zip`.
@@ -90,7 +92,7 @@ Expected: `"ok": true`, resources and SQLite true, network calls zero.
 4. In **Jobs**, wait for two stable polling observations (normally a few
    seconds), or use **Scan now** twice. A row appears as **ready** (unprocessed).
    Inspect the full advert and metadata. No model request occurs.
-5. Select the row and press **Process selected / retry checkpoints**. Observe
+5. Select the row and press **Process selected**. Observe
    queued → generating → rendering → completed. Open the artifact/output folder:
    there are two real DOCX files, visibly **NOT FOR SUBMISSION**.
 6. In **Prompts**, edit and Save a prompt. In **Base Resumes**, edit a field and
@@ -128,6 +130,7 @@ manually retrying a failed call.
 **Retries and revisions:** successful resume/letter calls are independently
 checkpointed in SQLite before rendering. Process on a failed item reuses those
 checkpoints; when both exist, rendering retry makes **zero paid calls**.
+For saved attempts, the button reads **Retry selected (frozen inputs / checkpoints)**.
 If the frozen output path is unusable, **Render saved outputs to folder…**
 creates a render-only revision at an explicitly chosen destination, reusing both
 checkpoints with no API request.
@@ -214,7 +217,10 @@ A lock prevents two instances using the same data folder from running together.
 API-key input is masked. Persistent keys use **Windows Credential Manager**
 directly through keyring's Windows backend; unsupported/unavailable secure
 storage fails closed rather than falling back to plaintext. Session-only keys
-are available for development and testing. No environment-variable export,
+are available for development and testing. Keys are bound to their configured
+HTTPS endpoint: changing services never reuses another service's key, and queued
+jobs retrieve credentials for their frozen endpoint. Delete-key acts on the
+selected endpoint. No environment-variable export,
 SQLite/plain-settings key storage, telemetry, or raw API/private-resume logging.
 Settings/DB backups contain no API key, but **do contain private resume/job data**.
 Generated DOCX, SQLite, prompt/base files and backups are **not encrypted by the

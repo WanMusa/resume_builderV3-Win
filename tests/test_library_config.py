@@ -111,3 +111,45 @@ def test_required_base_fields_reject_whitespace_without_rewriting_facts(tmp_path
         BaseResume.model_validate(base)
     base["identity"]["name"] = " Alex Example "
     assert BaseResume.model_validate(base).identity.name == " Alex Example "
+
+
+def test_credentials_bound_to_endpoint_without_secret_snapshots(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    vault = KeyVault()
+    first = "https://api.openai.com/v1"
+    other = "https://trusted.example/v1"
+    vault.set("fictional-first-value", persist=False, base_url=first)
+    assert vault.get(other) is None
+    vault.set("fictional-other-value", persist=False, base_url=other)
+    assert vault.get(first) == "fictional-first-value"
+    assert vault.get(other) == "fictional-other-value"
+    vault.delete(other)
+    assert vault.get(other) is None
+    assert vault.get(first) == "fictional-first-value"
+    assert vault.get(first + "/") == "fictional-first-value"
+
+
+def test_mock_windows_vault_roundtrip_is_endpoint_scoped(monkeypatch, tmp_path):
+    stored = {}
+
+    class Backend:
+        def set_password(self, service, account, value):
+            stored[service, account] = value
+
+        def get_password(self, service, account):
+            return stored.get((service, account))
+
+        def delete_password(self, service, account):
+            del stored[service, account]
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(KeyVault, "_backend", staticmethod(Backend))
+    vault = KeyVault()
+    vault.set("fictional-vault-value", persist=True)
+    restarted = KeyVault()
+    assert restarted.get() == "fictional-vault-value"
+    assert restarted.get("https://trusted.example/v1") is None
+    save_settings(tmp_path, Settings())
+    assert "fictional-vault-value" not in (tmp_path / "settings.json").read_text()
+    restarted.delete()
+    assert vault.get() is None

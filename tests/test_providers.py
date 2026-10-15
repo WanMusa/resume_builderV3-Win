@@ -120,7 +120,7 @@ def test_strict_request_and_context_once(base, monkeypatch):
         return httpx.Response(200, json=envelope(expected))
 
     options = install_transport(monkeypatch, handle)
-    prompt = "Tailor {job_description} {job_description} {evidence} {evidence} Unique job description"
+    prompt = "Tailor {job_description} {job_description} {evidence} {evidence}"
     result = providers.generate("resume", {"description_text": "Unique job description"}, base, prompt,
                                 remote_config(), "test-key")
     payload = requests[0]
@@ -336,3 +336,93 @@ def test_schema_valid_credential_echo_is_never_returned_for_checkpoint(base, mon
     with pytest.raises(providers.ProviderError, match="credential material") as error:
         providers.generate("resume", {"description_text": "Job"}, base, "", remote_config(), "test-key")
     assert "test-key" not in str(error.value)
+
+
+def test_public_input_estimate_matches_prompt_budget_and_is_offline(base, monkeypatch):
+    monkeypatch.setattr(httpx, "Client", lambda **kw: pytest.fail("Estimate performed network I/O"))
+    job = {"description_text": "Unique job description"}
+    prompt = "Tailor {job_description} using {evidence}"
+    expected = sum(len(message["content"]) for message in providers._messages(
+        job, providers._base(base), prompt, {},
+    ))
+    assert providers.estimate_input_chars(job, base, prompt) == expected
+
+
+def test_public_input_estimate_rejects_hard_limit_without_truncating(base):
+    with pytest.raises(providers.ProviderError, match="nothing was truncated"):
+        providers.estimate_input_chars({"description_text": "a" * providers.MAX_INPUT_CHARS}, base, "")
+
+
+def test_json_object_estimate_and_soft_budget_include_appended_schema(base, monkeypatch):
+    job = {"description_text": "Job"}
+    prompt_only = providers.estimate_input_chars(job, base, "")
+    actual = providers.estimate_input_chars(job, base, "", kind="resume", mode="json_object")
+    assert actual > prompt_only
+    config = remote_config(provider="compatible", mode="json_object", input_budget_chars=prompt_only)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: pytest.fail("Unacknowledged request performed network I/O"))
+    with pytest.raises(providers.ProviderError, match="budget"):
+        providers.generate("resume", job, base, "", config, "test-key")
+
+
+def test_json_object_schema_budget_can_be_explicitly_acknowledged(base, monkeypatch):
+    job = {"description_text": "Job"}
+    install_transport(monkeypatch, lambda request: httpx.Response(200, json=envelope(mock_result(base)["content"])))
+    result = providers.generate("resume", job, base, "", remote_config(
+        provider="compatible", mode="json_object",
+        input_budget_chars=providers.estimate_input_chars(job, base, ""),
+        budget_acknowledged=True,
+    ), "test-key")
+    assert result["content"] == mock_result(base)["content"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "compatible"])
+@pytest.mark.parametrize("kind", ["resume", "letter"])
+def test_strict_request_schema_omits_nested_length_constraints(base, monkeypatch, provider, kind):
+    captured = []
+
+    def handle(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=envelope(mock_result(base, kind)["content"]))
+
+    install_transport(monkeypatch, handle)
+    providers.generate(kind, {"description_text": "Job"}, base, "",
+                       remote_config(provider=provider), "test-key")
+    schema = captured[0]["response_format"]["json_schema"]["schema"]
+    pending = [schema]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            assert not {"minLength", "maxLength", "minItems", "maxItems"}.intersection(item)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    assert schema["additionalProperties"] is False
+    assert schema["required"]
+    assert schema["$defs"]["GroundedText"]["additionalProperties"] is False
+    assert "$ref" in json.dumps(schema)
+
+
+@pytest.mark.parametrize("paragraphs", [
+    [],
+    [{"text": "Supported wording.", "evidence_ids": ["ev-a"]}] * 7,
+    [{"text": "", "evidence_ids": ["ev-a"]}],
+    [{"text": "Supported wording.", "evidence_ids": []}],
+])
+def test_local_length_constraints_remain_enforced(base, paragraphs):
+    with pytest.raises(providers.ProviderError, match="invalid schema"):
+        providers.validate_content("letter", {"paragraphs": paragraphs}, base)
+
+
+def test_short_advert_never_deletes_matching_characters_from_instructions(base):
+    prompt = "Create a careful application and retain all factual achievements."
+    messages = providers._messages({"description_text": "a"}, providers._base(base), prompt, {})
+    user = messages[1]["content"]
+    assert user.startswith(prompt + "\n\nJOB DESCRIPTION:\na\n\nEVIDENCE:\n")
+    assert user.count("\n\nJOB DESCRIPTION:\na\n\n") == 1
+
+
+def test_literal_pasted_advert_is_preserved_and_placeholders_are_preferred(base):
+    prompt = "Instructions quoting a literal advert: Unique job description"
+    messages = providers._messages({"description_text": "Unique job description"},
+                                   providers._base(base), prompt, {})
+    assert messages[1]["content"].startswith(prompt + "\n\nJOB DESCRIPTION:\n")

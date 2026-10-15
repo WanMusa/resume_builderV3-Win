@@ -1,6 +1,6 @@
 """Serial processing with independent, durable generation checkpoints."""
 
-from .providers import ProviderError, generate
+from .providers import DEFAULT_BASE_URL, ProviderError, generate
 from .rendering import RenderError, render_documents
 
 
@@ -27,7 +27,7 @@ class Processor:
                 emit_status("generating")
                 if config.get("provider", "mock") != "mock":
                     try:
-                        key = self.key_getter()
+                        key = self.key_getter(snapshot.get("base_url", DEFAULT_BASE_URL))
                     except Exception:
                         raise ProviderError(
                             "Secure credential access failed; unlock Credential Manager or enter a session-only key in Settings."

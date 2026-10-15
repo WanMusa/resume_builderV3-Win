@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._loading = True
         self._prompt_id = self._base_id = None
         self._scanning = self._testing = False
+        self._closing = False
         self._threads = set()
         self._rows = {}
         self.bridge = WorkerBridge(self)
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         self.scan_timer = QTimer(self)
         self.scan_timer.timeout.connect(self.scan_inbox)
         self.scan_timer.start(2500)
+        QTimer.singleShot(0, self.scan_inbox)
         if settings.inbox_folder and settings.output_folder:
             self.statusBar().showMessage("Ready. Import is automatic; generation requires Process.")
         else:
@@ -160,13 +162,17 @@ class MainWindow(QMainWindow):
         _button("Scan now", self.scan_inbox, filters)
         layout.addLayout(filters)
         splitter = QSplitter()
-        self.jobs_table = QTableWidget(0, 5)
-        self.jobs_table.setHorizontalHeaderLabels(["Title / ID", "Company", "Status", "Updated", "Archived"])
+        self.jobs_table = QTableWidget(0, 8)
+        self.jobs_table.setHorizontalHeaderLabels(
+            ["Title / ID", "Company", "Status", "Filename", "Error", "Captured", "Updated", "Archived"])
         self.jobs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.jobs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.jobs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.jobs_table.setAlternatingRowColors(True)
-        self.jobs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.jobs_table.setWordWrap(False)
+        self.jobs_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate((260, 155, 105, 160, 250, 180, 180, 80)):
+            self.jobs_table.setColumnWidth(column, width)
         self.jobs_table.itemSelectionChanged.connect(self._selection_changed)
         splitter.addWidget(self.jobs_table)
         detail = QWidget()
@@ -187,11 +193,16 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         self.process_button = _button("Process selected / retry checkpoints", self.process_selected, actions)
         self.regenerate_button = _button("Regenerate (new revision)…", self.regenerate_selected, actions)
-        self.archive_button = _button("Archive selected", lambda: self.archive_selected(True), actions)
-        self.restore_button = _button("Restore selected", lambda: self.archive_selected(False), actions)
-        _button("Archive completed", self.archive_completed, actions)
-        _button("Open output folder", lambda: self._open_local(self.settings.output_folder), actions)
+        self.rerender_button = _button("Render saved outputs to folder…", self.rerender_selected, actions)
+        actions.addStretch()
         layout.addLayout(actions)
+        archive_actions = QHBoxLayout()
+        self.archive_button = _button("Archive selected", lambda: self.archive_selected(True), archive_actions)
+        self.restore_button = _button("Restore selected", lambda: self.archive_selected(False), archive_actions)
+        _button("Archive completed", self.archive_completed, archive_actions)
+        archive_actions.addStretch()
+        _button("Open output folder", lambda: self._open_local(self.settings.output_folder), archive_actions)
+        layout.addLayout(archive_actions)
         self.tabs.addTab(page, "Jobs")
 
     def _selected_ids(self):
@@ -220,10 +231,12 @@ class MainWindow(QMainWindow):
         for index, row in enumerate(rows):
             job = row.get("job") or {}
             values = [job.get("title") or row["id"], job.get("company") or "", row["status"],
-                      row.get("updated_at", ""), "Yes" if row.get("archived") else ""]
+                      row.get("filename") or Path(row.get("source_path") or "").name, row.get("error") or "",
+                      job.get("captured_at") or "", row.get("updated_at", ""), "Yes" if row.get("archived") else ""]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.ItemDataRole.UserRole, row["id"])
+                item.setToolTip(str(row.get("source_path") or value) if column == 3 else str(value))
                 self.jobs_table.setItem(index, column, item)
                 if row["id"] in selected:
                     item.setSelected(True)
@@ -238,7 +251,25 @@ class MainWindow(QMainWindow):
         if not row:
             self.preview.setPlainText("Select a job to inspect its full description, errors, checkpoints and artifacts.")
         else:
-            self.preview.setPlainText(json.dumps(row, indent=2, ensure_ascii=False, default=str))
+            job = row.get("job") or {}
+            metadata = {key: value for key, value in row.items()
+                        if key not in ("job", "snapshot", "checkpoints", "artifacts") and not key.endswith("_json")}
+            job_details = {key: value for key, value in job.items() if key != "description_text"}
+            self.preview.setPlainText(
+                f"{job.get('title') or row['id']}\n{job.get('company') or ''}\n"
+                f"Status: {row['status']}  •  Revision: {row.get('revision', 1)}\n\n"
+                f"FULL JOB DESCRIPTION\n{job.get('description_text') or '(Invalid input — see error below)'}\n\n"
+                "JOB METADATA\n" + json.dumps(job_details, indent=2, ensure_ascii=False, default=str)
+                + f"\n\nSOURCE FILE\n{row.get('source_path') or 'Unknown'}"
+                + f"\n\nERROR / GUIDANCE\n{row.get('error') or 'None'}"
+                + "\n\nSAVED CHECKPOINTS\n"
+                + json.dumps(row.get("checkpoints") or {}, indent=2, ensure_ascii=False, default=str)
+                + "\n\nARTIFACTS\n" + json.dumps(row.get("artifacts") or [], indent=2, ensure_ascii=False, default=str)
+                + "\n\nHISTORY METADATA\n"
+                + json.dumps(metadata, indent=2, ensure_ascii=False, default=str)
+                + "\n\nFROZEN INPUT SNAPSHOT\n"
+                + json.dumps(row.get("snapshot"), indent=2, ensure_ascii=False, default=str)
+            )
             for artifact in row.get("artifacts", []):
                 if isinstance(artifact, dict):
                     path = artifact.get("path") or artifact.get("file_path")
@@ -258,9 +289,13 @@ class MainWindow(QMainWindow):
                                           and all(self._rows[i]["status"] not in ACTIVE
                                                   and self._rows[i].get("job")
                                                   and not self._rows[i].get("archived") for i in ids))
+        self.rerender_button.setEnabled(
+            bool(ids) and hasattr(self.store, "rerender")
+            and all(self._can_rerender(self._rows[i]) for i in ids)
+        )
 
     def scan_inbox(self):
-        if self._scanning or not self.settings.inbox_folder:
+        if self._closing or self._scanning or not self.settings.inbox_folder:
             return
         self._scanning = True
         folder = Path(self.settings.inbox_folder)
@@ -277,11 +312,14 @@ class MainWindow(QMainWindow):
             for job_id in ids:
                 row = self.store.get(job_id)
                 frozen = row.get("snapshot")
+                is_new = not frozen
                 if not frozen:
                     if fresh is None:
                         fresh = self.library.snapshot(self.settings)
                     frozen = fresh
                 frozen = dict(frozen)
+                if is_new:
+                    frozen["revision"] = row.get("revision", 1)
                 if not self._acknowledge_budget(row, frozen):
                     return
                 snapshots[job_id] = frozen
@@ -367,6 +405,45 @@ class MainWindow(QMainWindow):
             return False
         snapshot["budget_acknowledged"] = True
         return True
+
+    @staticmethod
+    def _can_rerender(row):
+        return (
+            row["status"] not in ACTIVE and not row.get("archived")
+            and bool(row.get("snapshot")) and bool(row.get("job"))
+            and {"resume", "letter"}.issubset(row.get("checkpoints") or {})
+        )
+
+    def rerender_selected(self):
+        ids = self._selected_ids()
+        if not ids:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Render saved outputs to a different folder", self.settings.output_folder)
+        if not folder:
+            return
+        try:
+            for job_id in ids:
+                row = self.store.get(job_id)
+                if not self._can_rerender(row):
+                    raise ValueError("Render relocation requires an inactive, unarchived job with both saved resume and letter checkpoints.")
+                frozen_inbox = row["snapshot"].get("inbox_folder") or self.settings.inbox_folder
+                validate_folders(frozen_inbox, folder)
+                if self.settings.inbox_folder and self.settings.inbox_folder != frozen_inbox:
+                    validate_folders(self.settings.inbox_folder, folder)
+            if QMessageBox.question(
+                self, "Render saved outputs — zero API calls",
+                f"Create {len(ids)} new render-only revision(s) in:\n{folder}\n\n"
+                "Both saved resume and letter checkpoints are reused. No provider API requests or new token charges "
+                "are made. Original snapshots, checkpoints and documents remain unchanged.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            for job_id in ids:
+                self.store.rerender(job_id, folder)
+            self.worker.wake()
+            self.refresh_jobs()
+        except Exception as exc:
+            self._error(exc)
 
     def archive_selected(self, archived):
         try:
@@ -671,6 +748,8 @@ class MainWindow(QMainWindow):
         title.setObjectName("heading")
         layout.addWidget(title)
         help_text = QLabel("Cleanup and reset remove database history only, not source files or generated documents. "
+                           "Cleanup includes old completed, failed, invalid/interrupted records and all archived inactive records, "
+                           "including unprocessed jobs. The cutoff uses the history creation date. "
                            "The deduplication ledger is retained by default. Active/queued work is never deleted.")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
@@ -678,7 +757,7 @@ class MainWindow(QMainWindow):
         self.cutoff = QDateEdit(QDate.currentDate().addDays(-30))
         self.cutoff.setCalendarPopup(True)
         self.cutoff.setDisplayFormat("yyyy-MM-dd")
-        maintenance.addWidget(QLabel("Remove terminal history before"))
+        maintenance.addWidget(QLabel("History created before"))
         maintenance.addWidget(self.cutoff)
         self.cleanup_button = _button("Preview cleanup…", self.cleanup_history, maintenance)
         self.backup_button = _button("Back up database…", self.backup_database, maintenance)
@@ -704,9 +783,11 @@ class MainWindow(QMainWindow):
     def _provider_changed(self, *_):
         compatible = self.provider.currentText() == "compatible"
         self.base_url.setEnabled(compatible)
+        self.mode.setEnabled(compatible)
         self.custom_endpoint_acknowledged.setEnabled(compatible)
         if not self._loading and not compatible:
             self.base_url.setText(DEFAULT_BASE_URL)
+            self.mode.setCurrentText("json_schema")
             self.custom_endpoint_acknowledged.setChecked(False)
 
     def _endpoint_changed(self, *_):
@@ -750,6 +831,8 @@ class MainWindow(QMainWindow):
         for name in ("resume_prompt", "letter_prompt", "base_resume"):
             values[name] = getattr(self, name).currentData() or ""
         settings = Settings.model_validate(values)
+        if settings.mode == "json_object" and settings.provider != "compatible":
+            raise ValueError("JSON-object mode is available only for the compatible provider. Use json_schema for OpenAI.")
         if settings.base_url != DEFAULT_BASE_URL:
             if settings.provider != "compatible":
                 raise ValueError("Only the compatible provider permits a custom URL. Select compatible in Settings.")
@@ -777,7 +860,7 @@ class MainWindow(QMainWindow):
             for folder in (settings.inbox_folder, settings.output_folder):
                 Path(folder).expanduser().mkdir(parents=True, exist_ok=True)
             if self.key.text():
-                self.vault.set(self.key.text(), persist=self.persist_key.isChecked())
+                self.vault.set(self.key.text(), persist=self.persist_key.isChecked(), base_url=settings.base_url)
             save_settings(self.data_dir, settings)
             self.settings = settings
             self.key.clear()
@@ -791,7 +874,7 @@ class MainWindow(QMainWindow):
     def delete_key(self):
         if QMessageBox.question(self, "Delete API key?", "Remove the saved and in-memory API key?") == QMessageBox.StandardButton.Yes:
             try:
-                self.vault.delete()
+                self.vault.delete(self._read_settings().base_url)
                 self.key.clear()
             except Exception as exc:
                 self._error(exc)
@@ -801,7 +884,7 @@ class MainWindow(QMainWindow):
             return
         try:
             config = self._read_settings().model_dump()
-            key = self.key.text() or self.vault.get()
+            key = None if config["provider"] == "mock" else (self.key.text() or self.vault.get(config["base_url"]))
             destination = config["base_url"] if config["provider"] != "mock" else "Offline mock (no network)"
             if QMessageBox.warning(
                 self, "Explicit provider test", f"Destination: {destination}\n\n"
@@ -837,7 +920,8 @@ class MainWindow(QMainWindow):
             count = self.store.cleanup(cutoff, statuses, preview=True, clear_ledger=clear)
             warning = "\nDeduplication ledger will also be cleared; inbox files may reappear." if clear else "\nDeduplication ledger will be retained."
             if QMessageBox.warning(
-                self, "Confirm cleanup", f"Delete {count} matching database history record(s)? Generated documents remain.{warning}",
+                self, "Confirm cleanup", f"Delete {count} old terminal or archived inactive database history record(s)? "
+                f"Unarchived unprocessed jobs and all active/queued jobs remain. Generated documents remain.{warning}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
             ) == QMessageBox.StandardButton.Yes:
                 self.store.cleanup(cutoff, statuses, preview=False, clear_ledger=clear)
@@ -889,5 +973,6 @@ class MainWindow(QMainWindow):
                 return
         self.scan_timer.stop()
         self.refresh_timer.stop()
+        self._closing = True
         self.worker.stop()
         event.accept()

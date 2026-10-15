@@ -126,7 +126,7 @@ def _messages(job, base, prompt, config):
     parts = []
     # Never reinterpret placeholders contained in untrusted job/evidence text.
     try:
-        for literal, token, spec, conversion in Formatter().parse(prompt.replace(description, "")):
+        for literal, token, spec, conversion in Formatter().parse(prompt):
             parts.append(literal)
             if token is not None:
                 if token not in contexts or spec or conversion:
@@ -141,7 +141,11 @@ def _messages(job, base, prompt, config):
         if placeholder not in inserted:
             label = "JOB DESCRIPTION" if placeholder == "job_description" else "EVIDENCE"
             text += f"\n\n{label}:\n{context}"
-    size = len(text) + len(POLICY)
+    _check_input_budget(len(text) + len(POLICY), config)
+    return [{"role": "system", "content": POLICY}, {"role": "user", "content": text}]
+
+
+def _check_input_budget(size, config):
     if size > MAX_INPUT_CHARS:
         raise ProviderError("Input exceeds the safe 200,000-character limit. Shorten the job or evidence explicitly; nothing was truncated.")
     budget = config.get("input_budget_chars")
@@ -151,7 +155,22 @@ def _messages(job, base, prompt, config):
         acknowledged = config.get("budget_acknowledged") is True or config.get("acknowledge_budget") is True
         if size > budget and not acknowledged:
             raise ProviderError("Input exceeds the configured budget. Explicitly acknowledge the larger request or edit the input; nothing was truncated.")
-    return [{"role": "system", "content": POLICY}, {"role": "user", "content": text}]
+
+
+def estimate_input_chars(job: dict, base: dict, prompt: str, *,
+                         kind: str | None = None, mode: str = "json_schema") -> int:
+    """Estimate one document's prompt context locally, without truncating it."""
+    messages = _messages(job, _base(base), prompt, {"budget_acknowledged": True})
+    if mode not in ("json_schema", "json_object"):
+        raise ProviderError("Choose strict json_schema or explicitly select advanced json_object mode.")
+    if mode == "json_object":
+        if kind not in ("resume", "letter"):
+            raise ProviderError("Select resume or letter to estimate json_object schema context.")
+        schema = (ResumeContent if kind == "resume" else LetterContent).model_json_schema()
+        messages[0]["content"] += "\nRequired JSON schema:\n" + json.dumps(schema)
+    size = sum(len(message["content"]) for message in messages)
+    _check_input_budget(size, {})
+    return size
 
 
 def _json(text):
@@ -163,6 +182,16 @@ def _json(text):
             obj[key] = value
         return obj
     return json.loads(text, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+
+
+def _strict_schema(schema):
+    """Remove model-specific length constraints; local validation retains them."""
+    if isinstance(schema, dict):
+        return {key: _strict_schema(value) for key, value in schema.items()
+                if key not in {"minLength", "maxLength", "minItems", "maxItems"}}
+    if isinstance(schema, list):
+        return [_strict_schema(value) for value in schema]
+    return schema
 
 
 def _remote_profile(config, key):
@@ -191,7 +220,10 @@ def _remote_profile(config, key):
 
 
 def generate(kind: str, job: dict, base: dict, prompt: str, config: dict, key: str | None) -> dict:
-    """Generate one document. No fallback, automatic retries, or credential persistence."""
+    """Generate one document; prefer context placeholders over pasted job text.
+
+    No fallback, automatic retries, or credential persistence.
+    """
     if kind not in ("resume", "letter"):
         raise ProviderError("Document kind must be resume or letter.")
     validated_base = _base(base)
@@ -218,10 +250,13 @@ def generate(kind: str, job: dict, base: dict, prompt: str, config: dict, key: s
     url, model, mode, timeout = _remote_profile(config, key)
     messages = _messages(job, validated_base, prompt, config)
     schema = (ResumeContent if kind == "resume" else LetterContent).model_json_schema()
-    response_format = {"type": "json_schema", "json_schema": {"name": kind, "strict": True, "schema": schema}}
+    response_format = {"type": "json_schema", "json_schema": {
+        "name": kind, "strict": True, "schema": _strict_schema(schema),
+    }}
     if mode == "json_object":
         response_format = {"type": "json_object"}
         messages[0]["content"] += "\nRequired JSON schema:\n" + json.dumps(schema)
+    _check_input_budget(sum(len(message["content"]) for message in messages), config)
     payload = {"model": model, "messages": messages, "response_format": response_format}
     content, usage = _request(payload, url, key, timeout)
     return {"content": validate_content(kind, content, base), "usage": usage, "model": model}

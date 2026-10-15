@@ -1,5 +1,6 @@
 """Writable user configuration and fail-closed Windows credential storage."""
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -96,7 +97,12 @@ class KeyVault:
     """Never fall back to a plaintext or third-party keyring backend."""
 
     def __init__(self):
-        self._ephemeral: str | None = None
+        self._ephemeral: dict[str, str] = {}
+
+    @staticmethod
+    def _account(base_url: str) -> str:
+        endpoint = Settings(base_url=base_url).base_url
+        return "provider-api-key:" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _backend():
@@ -109,34 +115,37 @@ class KeyVault:
         except Exception:
             raise ValueError("Windows Credential Manager is unavailable; key was not saved.") from None
 
-    def get(self) -> str | None:
-        if self._ephemeral is not None:
-            return self._ephemeral
+    def get(self, base_url: str = "https://api.openai.com/v1") -> str | None:
+        account = self._account(base_url)
+        if account in self._ephemeral:
+            return self._ephemeral[account]
         if sys.platform != "win32":
             return None
         try:
-            return self._backend().get_password("ResumeBuilderV3-Win", "provider-api-key")
+            return self._backend().get_password("ResumeBuilderV3-Win", account)
         except Exception:
             raise ValueError("Cannot read Windows Credential Manager. Enter a session-only key or repair vault access.") from None
 
-    def set(self, key: str, persist: bool = True) -> None:
+    def set(self, key: str, persist: bool = True, base_url: str = "https://api.openai.com/v1") -> None:
         if not key.strip():
             raise ValueError("API key cannot be empty")
+        account = self._account(base_url)
         if persist:
             try:
-                self._backend().set_password("ResumeBuilderV3-Win", "provider-api-key", key.strip())
+                self._backend().set_password("ResumeBuilderV3-Win", account, key.strip())
             except Exception:
                 raise ValueError("Secure credential storage failed; key was not saved. Session-only is available.") from None
-            self._ephemeral = None
+            self._ephemeral.pop(account, None)
         else:
-            self._ephemeral = key.strip()
+            self._ephemeral[account] = key.strip()
 
-    def delete(self) -> None:
-        self._ephemeral = None
+    def delete(self, base_url: str = "https://api.openai.com/v1") -> None:
+        account = self._account(base_url)
+        self._ephemeral.pop(account, None)
         if sys.platform == "win32":
             backend = self._backend()
             try:
-                if backend.get_password("ResumeBuilderV3-Win", "provider-api-key") is not None:
-                    backend.delete_password("ResumeBuilderV3-Win", "provider-api-key")
+                if backend.get_password("ResumeBuilderV3-Win", account) is not None:
+                    backend.delete_password("ResumeBuilderV3-Win", account)
             except Exception:
                 raise ValueError("Could not remove the saved credential from Windows Credential Manager.") from None
