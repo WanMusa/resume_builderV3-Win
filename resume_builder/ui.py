@@ -374,9 +374,12 @@ class MainWindow(QMainWindow):
         from . import providers
         estimate = getattr(providers, "estimate_input_chars", None)
 
-        def input_size(prompt):
+        def input_size(kind, prompt):
             if estimate is not None:
-                return estimate(row["job"], snapshot["base"], prompt)
+                return estimate(
+                    row["job"], snapshot["base"], prompt,
+                    kind=kind, mode=snapshot.get("mode", "json_schema"),
+                )
             # Conservative fallback for providers without an exact local estimator.
             return (
                 len(row["job"]["description_text"]) + len(prompt)
@@ -386,7 +389,7 @@ class MainWindow(QMainWindow):
 
         checkpoints = row.get("checkpoints") or {}
         sizes = {
-            kind: input_size(snapshot[kind + "_prompt"])
+            kind: input_size(kind, snapshot[kind + "_prompt"])
             for kind in ("resume", "letter") if kind not in checkpoints
         }
         budget = snapshot.get("input_budget_chars", 30000)
@@ -730,7 +733,7 @@ class MainWindow(QMainWindow):
         self.base_url.textChanged.connect(self._endpoint_changed)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key.setPlaceholderText("Leave blank to keep the current key")
+        self.key.setPlaceholderText("Leave blank to keep the key for this endpoint")
         self.key.textChanged.connect(self._mark_settings)
         form.addRow("API key (masked)", self.key)
         self.persist_key = QCheckBox("Persist in Windows secure credential store")
@@ -793,6 +796,7 @@ class MainWindow(QMainWindow):
     def _endpoint_changed(self, *_):
         if not self._loading:
             self.custom_endpoint_acknowledged.setChecked(False)
+            self.key.clear()
 
     def _populate_library_settings(self):
         for widget, kind in ((self.resume_prompt, "resume"), (self.letter_prompt, "letter"), (self.base_resume, None)):
@@ -872,9 +876,15 @@ class MainWindow(QMainWindow):
             return False
 
     def delete_key(self):
-        if QMessageBox.question(self, "Delete API key?", "Remove the saved and in-memory API key?") == QMessageBox.StandardButton.Yes:
+        destination = self.base_url.text().strip() or self.settings.base_url
+        if QMessageBox.question(
+            self, "Delete this endpoint's API key?",
+            f"Destination: {destination}\n\nRemove only this endpoint's saved and in-memory API key? "
+            "Keys for other destinations will remain.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
             try:
-                self.vault.delete(self._read_settings().base_url)
+                self.vault.delete(destination)
                 self.key.clear()
             except Exception as exc:
                 self._error(exc)

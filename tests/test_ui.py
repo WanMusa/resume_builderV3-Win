@@ -18,16 +18,20 @@ from resume_builder.ui import MainWindow
 class MemoryVault:
     def __init__(self):
         self.value = None
+        self.values = {}
         self.persist = None
 
     def get(self, base_url="https://api.openai.com/v1"):
-        return self.value
+        return self.values.get(base_url.rstrip("/"))
 
     def set(self, key, persist=False, base_url="https://api.openai.com/v1"):
         self.value, self.persist = key, persist
+        self.values[base_url.rstrip("/")] = key
 
     def delete(self, base_url="https://api.openai.com/v1"):
-        self.value = None
+        removed = self.values.pop(base_url.rstrip("/"), None)
+        if removed == self.value:
+            self.value = None
 
 
 @pytest.fixture(scope="module")
@@ -279,6 +283,8 @@ def test_live_key_save_requires_destination_trust_without_exposing_key(window, m
     assert window.settings.provider == "compatible"
     assert window.settings.custom_endpoint_acknowledged is True
     assert window.vault.value == "fictional-key-fixture"
+    assert window.vault.get("https://provider.example.test/v1") == "fictional-key-fixture"
+    assert window.vault.get("https://api.openai.com/v1") is None
     settings_text = (window.data_dir / "settings.json").read_text()
     assert "fictional-key-fixture" not in settings_text
     assert json.loads(settings_text)["custom_endpoint_acknowledged"] is True
@@ -315,7 +321,7 @@ def test_over_budget_requires_per_job_opt_in_without_truncation(window, monkeypa
     assert window.save_preferences()
     assert window.settings.input_budget_chars == 1000
     assert json.loads((window.data_dir / "settings.json").read_text())["input_budget_chars"] == 1000
-    monkeypatch.setattr(providers, "estimate_input_chars", lambda job, base, prompt: 1500, raising=False)
+    monkeypatch.setattr(providers, "estimate_input_chars", lambda job, base, prompt, **kw: 1500, raising=False)
     notices = []
 
     def decline(*args, **kwargs):
@@ -444,3 +450,68 @@ def test_first_processing_of_changed_import_uses_its_durable_revision(window):
     window.process_selected()
     assert window.store.get(revision["id"])["snapshot"]["revision"] == 2
     assert window.store.get(original_id)["status"] == "ready"
+
+
+def test_connection_keys_are_scoped_to_selected_endpoint(window, app, monkeypatch):
+    from resume_builder import providers
+    default = "https://api.openai.com/v1"
+    custom = "https://provider.example.test/v1"
+    window.vault.set("fictional-openai-key", persist=False, base_url=default)
+    calls = []
+    monkeypatch.setattr(providers, "test_connection", lambda config, key: calls.append((config["base_url"], key)))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: QMessageBox.StandardButton.Yes)
+    window.provider.setCurrentText("compatible")
+    window.key.setText("fictional-unsaved-key")
+    window.base_url.setText(custom)
+    assert not window.key.text()
+    window.custom_endpoint_acknowledged.setChecked(True)
+    window.test_connection()
+    wait_for(app, lambda: len(calls) == 1 and not window._testing)
+    assert calls[0] == (custom, None)
+    window.vault.set("fictional-custom-key", persist=False, base_url=custom)
+    window.provider.setCurrentText("openai")
+    window.test_connection()
+    wait_for(app, lambda: len(calls) == 2 and not window._testing)
+    assert calls[1] == (default, "fictional-openai-key")
+    window.provider.setCurrentText("compatible")
+    window.base_url.setText(custom)
+    window.custom_endpoint_acknowledged.setChecked(True)
+    window.test_connection()
+    wait_for(app, lambda: len(calls) == 3 and not window._testing)
+    assert calls[2] == (custom, "fictional-custom-key")
+
+
+def test_delete_key_confirms_destination_and_preserves_other_endpoint(window, monkeypatch):
+    default = "https://api.openai.com/v1"
+    custom = "https://provider.example.test/v1"
+    window.vault.set("fictional-openai-key", persist=False, base_url=default)
+    window.vault.set("fictional-custom-key", persist=False, base_url=custom)
+    window.provider.setCurrentText("compatible")
+    window.base_url.setText(custom)
+    window.custom_endpoint_acknowledged.setChecked(True)
+
+    def confirm(*args, **kwargs):
+        assert custom in args[2]
+        assert "other destinations" in args[2]
+        assert args[-1] == QMessageBox.StandardButton.No
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+    window.delete_key()
+    assert window.vault.get(custom) is None
+    assert window.vault.get(default) == "fictional-openai-key"
+
+
+def test_mock_connection_never_reads_unavailable_credential_backend(window, app, monkeypatch):
+    assert window.provider.currentText() == "mock"
+    notices = []
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("Offline mock must not read the credential backend")
+
+    monkeypatch.setattr(window.vault, "get", unavailable)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: notices.append(True))
+    monkeypatch.setattr(window, "_error", lambda exc: pytest.fail(str(exc)))
+    window.test_connection()
+    wait_for(app, lambda: bool(notices) and not window._testing)
